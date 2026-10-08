@@ -7,7 +7,7 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 MAX_CHARS_PER_DOC = 12_000  # ~3k tokens each; keeps cost and latency low
 
 SYSTEM_PROMPT = """You are an expert technical recruiter reviewing a resume against a job description.
