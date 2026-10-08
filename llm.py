@@ -1,13 +1,20 @@
-"""Google Gemini API call + JSON validation. No Streamlit code here."""
+"""Google Gemini API call + JSON validation + Fallback models. No Streamlit code here."""
 import json
 import os
 import re
+import time
 
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 
 DEFAULT_MODEL = "gemini-3.8-flash"
+FALLBACK_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+    "gemini-2.0-flash",
+]
 MAX_CHARS_PER_DOC = 12_000  # ~3k tokens each; keeps cost and latency low
 
 SYSTEM_PROMPT = """You are an expert technical recruiter reviewing a resume against a job description.
@@ -84,12 +91,13 @@ def parse_and_validate(raw: str) -> dict:
 
 
 def analyze_resume(resume_text: str, jd_text: str, score: float) -> dict:
-    """Ask Google Gemini for structured analysis. Retries once on bad JSON."""
+    """Ask Google Gemini for structured analysis with model fallbacks."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise LLMError("GEMINI_API_KEY not found. Add it to your .env file or Streamlit secrets.")
 
-    model_name = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
+    env_model = os.getenv("GEMINI_MODEL")
+    candidate_models = [env_model] if env_model else FALLBACK_MODELS
 
     try:
         client = genai.Client(api_key=api_key)
@@ -104,25 +112,30 @@ def analyze_resume(resume_text: str, jd_text: str, score: float) -> dict:
 
     last_error = "unknown error"
 
-    for attempt in range(2):
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.2,
-                    response_mime_type="application/json",
-                ),
-            )
-            raw = response.text or ""
-            return parse_and_validate(raw)
-        except APIError as exc:
-            raise LLMError(f"Gemini API Error: {exc.message}")
-        except ValueError as exc:
-            last_error = str(exc)
-            user_prompt += f"\n\nPrevious response was invalid JSON ({last_error}). Please strictly return the JSON object."
-        except Exception as exc:
-            raise LLMError(f"Could not reach Gemini API: {exc}")
+    for model_name in candidate_models:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        temperature=0.2,
+                        response_mime_type="application/json",
+                    ),
+                )
+                raw = response.text or ""
+                return parse_and_validate(raw)
+            except APIError as exc:
+                last_error = exc.message
+                if "high demand" in exc.message.lower() or "quota" in exc.message.lower() or exc.code in (429, 503):
+                    time.sleep(1)
+                    break  # Try next model in candidate_models list
+            except ValueError as exc:
+                last_error = str(exc)
+                user_prompt += f"\n\nPrevious response was invalid JSON ({last_error}). Please strictly return the JSON object."
+            except Exception as exc:
+                last_error = str(exc)
+                break
 
-    raise LLMError(f"The AI returned an unreadable response twice ({last_error}). Please try again.")
+    raise LLMError(f"Gemini API is currently overloaded ({last_error}). Please wait 10 seconds and click 'Analyze match' again.")
