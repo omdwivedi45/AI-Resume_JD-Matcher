@@ -1,11 +1,13 @@
-"""Anthropic API call + JSON validation. No Streamlit code here."""
+"""Google Gemini API call + JSON validation. No Streamlit code here."""
 import json
 import os
 import re
 
-import anthropic
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 
-DEFAULT_MODEL = "claude-3-5-sonnet-latest"
+DEFAULT_MODEL = "gemini-2.5-flash"
 MAX_CHARS_PER_DOC = 12_000  # ~3k tokens each; keeps cost and latency low
 
 SYSTEM_PROMPT = """You are an expert technical recruiter reviewing a resume against a job description.
@@ -56,7 +58,6 @@ def parse_and_validate(raw: str) -> dict:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        # Fallback: grab everything between the first { and the last }
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end <= start:
             raise ValueError("Response is not valid JSON.")
@@ -76,62 +77,52 @@ def parse_and_validate(raw: str) -> dict:
         if expected_type is list and not all(isinstance(x, str) for x in data[key]):
             raise ValueError(f"'{key}' must contain only strings.")
 
-    # Enforce "max 3 sentences" ourselves instead of trusting the model
     sentences = re.split(r"(?<=[.!?])\s+", data["summary"].strip())
     data["summary"] = " ".join(sentences[:3])
 
-    return {key: data[key] for key in REQUIRED_KEYS}  # drop any extra keys
+    return {key: data[key] for key in REQUIRED_KEYS}
 
 
 def analyze_resume(resume_text: str, jd_text: str, score: float) -> dict:
-    """Ask the LLM for structured analysis. Retries once on bad JSON."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    """Ask Google Gemini for structured analysis. Retries once on bad JSON."""
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise LLMError("ANTHROPIC_API_KEY not found. Add it to your .env file and restart the app.")
+        raise LLMError("GEMINI_API_KEY not found. Add it to your .env file or Streamlit secrets.")
 
-    model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
-    client = anthropic.Anthropic(api_key=api_key)
+    model_name = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
+
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as exc:
+        raise LLMError(f"Failed to initialize Gemini client: {exc}")
 
     user_prompt = (
         f"MATCH SCORE (embedding cosine similarity): {score}%\n\n"
         f"=== RESUME ===\n{truncate_text(resume_text)}\n\n"
         f"=== JOB DESCRIPTION ===\n{truncate_text(jd_text)}"
     )
-    messages = [{"role": "user", "content": user_prompt}]
+
     last_error = "unknown error"
 
-    for attempt in range(2):  # first try + one retry
+    for attempt in range(2):
         try:
-            response = client.messages.create(
-                model=model,
-                max_tokens=1500,
-                temperature=0.2,
-                system=SYSTEM_PROMPT,
-                messages=messages,
+            response = client.models.generate_content(
+                model=model_name,
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                ),
             )
-        except anthropic.AuthenticationError:
-            raise LLMError("Invalid API key. Check ANTHROPIC_API_KEY in your .env file.")
-        except anthropic.RateLimitError:
-            raise LLMError("Rate limit reached. Please wait a minute and try again.")
-        except anthropic.APIConnectionError:
-            raise LLMError("Could not reach the Anthropic API. Check your internet connection.")
-        except anthropic.APIStatusError as exc:
-            raise LLMError(f"Anthropic API error (status {exc.status_code}). Please try again.")
-
-        raw = "".join(block.text for block in response.content if block.type == "text")
-        try:
+            raw = response.text or ""
             return parse_and_validate(raw)
+        except APIError as exc:
+            raise LLMError(f"Gemini API Error: {exc.message}")
         except ValueError as exc:
             last_error = str(exc)
-            # Retry: show the model its bad answer and tell it what was wrong
-            messages = [
-                {"role": "user", "content": user_prompt},
-                {"role": "assistant", "content": raw or "(empty)"},
-                {
-                    "role": "user",
-                    "content": f"That response was invalid ({last_error}). "
-                    "Return ONLY the JSON object with the 5 required keys.",
-                },
-            ]
+            user_prompt += f"\n\nPrevious response was invalid JSON ({last_error}). Please strictly return the JSON object."
+        except Exception as exc:
+            raise LLMError(f"Could not reach Gemini API: {exc}")
 
     raise LLMError(f"The AI returned an unreadable response twice ({last_error}). Please try again.")

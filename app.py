@@ -9,16 +9,17 @@ from llm import LLMError, analyze_resume
 from matcher import compute_match_score
 from pdf_utils import PDFError, extract_text_from_pdf
 
-load_dotenv()  # reads ANTHROPIC_API_KEY / ANTHROPIC_MODEL from .env
+load_dotenv()  # reads GEMINI_API_KEY / GEMINI_MODEL from .env
 
 # Support Streamlit Cloud Secrets fallback
 try:
-    if "ANTHROPIC_API_KEY" in st.secrets:
-        os.environ["ANTHROPIC_API_KEY"] = st.secrets["ANTHROPIC_API_KEY"]
-    if "ANTHROPIC_MODEL" in st.secrets:
-        os.environ["ANTHROPIC_MODEL"] = st.secrets["ANTHROPIC_MODEL"]
+    if "GEMINI_API_KEY" in st.secrets:
+        os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+    if "GEMINI_MODEL" in st.secrets:
+        os.environ["GEMINI_MODEL"] = st.secrets["GEMINI_MODEL"]
 except Exception:
     pass
+
 
 st.set_page_config(page_title="AI Resume / JD Matcher", page_icon="📄", layout="wide")
 
